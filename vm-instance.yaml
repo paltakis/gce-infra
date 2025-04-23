@@ -44,7 +44,7 @@ resources:
           # Linux user
           # ------------------------------------------------------------------
           USERNAME=georgepaltakis
-          useradd -m "$USERNAME"
+          id -u "$USERNAME" &>/dev/null || useradd -m "$USERNAME"
           usermod -aG docker "$USERNAME"
           echo -e '\n# Auto-newgrp docker' >> /home/$USERNAME/.bashrc
           echo 'if ! id -nG | grep -qw docker; then exec newgrp docker; fi' >> /home/$USERNAME/.bashrc
