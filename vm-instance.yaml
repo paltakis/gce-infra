@@ -4,6 +4,7 @@ resources:
   properties:
     zone: us-central1-c
     machineType: zones/us-central1-c/machineTypes/e2-medium
+
     disks:
       - deviceName: instance-20250215-130550
         type: PERSISTENT
@@ -12,53 +13,65 @@ resources:
         initializeParams:
           sourceImage: projects/ubuntu-os-cloud/global/images/family/ubuntu-2204-lts
           diskSizeGb: 20
+
     networkInterfaces:
       - network: global/networks/default
         accessConfigs:
           - name: External NAT
             type: ONE_TO_ONE_NAT
+
     metadata:
       items:
       - key: startup-script
         value: |
           #!/bin/bash
           exec > /var/log/startup.log 2>&1
-          set -x
+          set -euxo pipefail
+
+          # ------------------------------------------------------------------
+          # Base packages
+          # ------------------------------------------------------------------
           apt-get update
           apt-get upgrade -y
+          apt-get install -y docker.io git curl
 
-          # Install Docker and Git packages
-          apt-get install -y docker.io git
-
-          # Install docker-compose (standalone) - requires curl
-          apt-get install -y curl
-          curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+          # docker-compose v1 (stand-alone binary)
+          curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" \
+               -o /usr/local/bin/docker-compose
           chmod +x /usr/local/bin/docker-compose
 
-          # Add the user to the docker group
-          useradd -m georgepaltakis
-          usermod -aG docker georgepaltakis
+          # ------------------------------------------------------------------
+          # Linux user
+          # ------------------------------------------------------------------
+          USERNAME=georgepaltakis
+          useradd -m "$USERNAME"
+          usermod -aG docker "$USERNAME"
+          echo -e '\n# Auto-newgrp docker' >> /home/$USERNAME/.bashrc
+          echo 'if ! id -nG | grep -qw docker; then exec newgrp docker; fi' >> /home/$USERNAME/.bashrc
 
-          # Append a snippet to .bashrc to refresh the shell groups using newgrp
-          echo "" >> /home/georgepaltakis/.bashrc
-          echo "# Automatically switch to a shell with updated docker group" >> /home/georgepaltakis/.bashrc
-          echo "if ! id -nG | grep -qw docker; then exec newgrp docker; fi" >> /home/georgepaltakis/.bashrc
+          # ------------------------------------------------------------------
+          # SSH deploy key (base64-encoded → decoded to /root/.ssh/id_ed25519)
+          # ------------------------------------------------------------------
+          mkdir -p /root/.ssh
+          echo "LS0tLS1CRUdJTiBPUEVOU1NIIFBSSVZBVEUgS0VZLS0tLS0KYjNCbGJuTnphQzFyWlhrdGRqRUFBQUFBQkc1dmJtVUFBQUFFYm05dVpRQUFBQUFBQUFBQkFBQUFNd0FBQUF0emMyZ3RaVwpReU5UVXhPUUFBQUNBd3FDUGsrdVgrcURWZUkxS0VGcENCRjRzK1dONnh4V0FqWnVUR1hQUjlMQUFBQUpoVnJkV0JWYTNWCmdRQUFBQXR6YzJndFpXUXlOVFV4T1FBQUFDQXdxQ1BrK3VYK3FEVmVJMUtFRnBDQkY0cytXTjZ4eFdBalp1VEdYUFI5TEEKQUFBRUFoR0I5SU1ZbENGaXQ4S2lZaURtSTN2dGdEWC9qUUV1Qyt5Z1NOZzAweVVEQ29JK1Q2NWY2b05WNGpVb1FXa0lFWAppejVZM3JIRllDTm01TVpjOUgwc0FBQUFEbkZ4Y1MxbmRtMHRaR1Z3Ykc5NUFRSURCQVVHQnc9PQotLS0tLUVORCBPUEVOU1NIIFBSSVZBVEUgS0VZLS0tLS0K" \
+            | base64 -d >/root/.ssh/id_ed25519
+          chmod 600 /root/.ssh/id_ed25519
+          printf 'Host github.com\n  StrictHostKeyChecking no\n' >/root/.ssh/config
+          ssh-keyscan -t ed25519 github.com >>/root/.ssh/known_hosts
 
-          # Create the target directory (if it doesn't exist) and clone the repository there
-          mkdir -p /home/georgepaltakis/QQQ_Trading_Bot
-          git clone --depth 1 git@github.com:paltakis/QQQ_Trading_Bot.git /home/georgepaltakis/QQQ_Trading_Bot
-            
-          # Change ownership of the cloned repository to the desired user
-          chown -R georgepaltakis:georgepaltakis /home/georgepaltakis/QQQ_Trading_Bot
-            
-          # Configure Git settings
-          git config --global --add safe.directory /home/georgepaltakis/QQQ_Trading_Bot
-          git config --global user.email "paltakis@yahoo.com"
-          git config --global user.name "George Paltakis"
-          
-          # Build the Docker image from the cloned repository
-          cd /home/georgepaltakis/QQQ_Trading_Bot
+          # ------------------------------------------------------------------
+          # Clone private repo
+          # ------------------------------------------------------------------
+          git clone --depth 1 git@github.com:paltakis/QQQ_Trading_Bot.git \
+                    /home/$USERNAME/QQQ_Trading_Bot
+          chown -R $USERNAME:$USERNAME /home/$USERNAME/QQQ_Trading_Bot
+
+          # ------------------------------------------------------------------
+          # Build Docker image
+          # ------------------------------------------------------------------
+          cd /home/$USERNAME/QQQ_Trading_Bot
           docker build -t qqq_trading_bot_app:latest .
+
     serviceAccounts:
       - email: 626418955652-compute@developer.gserviceaccount.com
         scopes:
