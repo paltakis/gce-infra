@@ -1,0 +1,46 @@
+resources:
+- name: qqq-trading-bot
+  type: compute.v1.instance
+  properties:
+    zone: us-central1-c
+    machineType: zones/us-central1-c/machineTypes/e2-medium
+    disks:
+      - deviceName: instance-boot-disk
+        type: PERSISTENT
+        boot: true
+        autoDelete: true
+        initializeParams:
+          sourceImage: projects/ubuntu-os-cloud/global/images/family/ubuntu-2204-lts
+          diskSizeGb: 20
+    networkInterfaces:
+      - network: global/networks/default
+        accessConfigs:
+          - name: External NAT
+            type: ONE_TO_ONE_NAT
+    metadata:
+      items:
+        - key: startup-script
+          value: |
+            #!/bin/bash
+            exec > /var/log/startup.log 2>&1
+            set -x
+            # Minimal dynamic actions: update the repository and rebuild Docker image
+            REPO_DIR="/home/georgepaltakis/QQQ_Trading_Bot"
+            if [ -d "$REPO_DIR" ]; then
+              cd "$REPO_DIR"
+              echo "Pulling latest code from GitHub..."
+              git pull origin main
+              echo "Rebuilding Docker image..."
+              docker build -t qqq_trading_bot:latest .
+            else
+              echo "Repository directory not found: $REPO_DIR"
+            fi
+    serviceAccounts:
+      - email: 626418955652-compute@developer.gserviceaccount.com
+        scopes:
+          - https://www.googleapis.com/auth/devstorage.read_only
+          - https://www.googleapis.com/auth/logging.write
+          - https://www.googleapis.com/auth/monitoring.write
+          - https://www.googleapis.com/auth/service.management.readonly
+          - https://www.googleapis.com/auth/servicecontrol
+          - https://www.googleapis.com/auth/trace.append
