@@ -6,78 +6,100 @@ resources:
     machineType: zones/us-central1-c/machineTypes/e2-medium
 
     disks:
-      - deviceName: instance-20250215-130550
-        type: PERSISTENT
-        boot: true
-        autoDelete: true
-        initializeParams:
-          sourceImage: projects/ubuntu-os-cloud/global/images/family/ubuntu-2204-lts
-          diskSizeGb: 20
+    - deviceName: boot
+      type: PERSISTENT
+      boot: true
+      autoDelete: true
+      initializeParams:
+        sourceImage: projects/ubuntu-os-cloud/global/images/family/ubuntu-2204-lts
+        diskSizeGb: 20
 
     networkInterfaces:
-      - network: global/networks/default
-        accessConfigs:
-          - name: External NAT
-            type: ONE_TO_ONE_NAT
+    - network: global/networks/default
+      accessConfigs:
+      - name: External NAT
+        type: ONE_TO_ONE_NAT
 
     metadata:
       items:
       - key: startup-script
         value: |
-          #!/bin/bash
+          #!/usr/bin/env bash
           exec > /var/log/startup.log 2>&1
           set -euxo pipefail
 
-          # ------------------------------------------------------------------
-          # Base packages
-          # ------------------------------------------------------------------
+          ############################################################################
+          # 0. Vars
+          ############################################################################
+          USERNAME=georgepaltakis
+          REPO_SSH=git@github.com:paltakis/QQQ_Trading_Bot.git
+          TOKEN_DIR="/home/$USERNAME/QQQ_Trading_Bot/config"
+
+          ############################################################################
+          # 1. Base packages + Docker & Compose-plugin (v2)
+          ############################################################################
           apt-get update
           apt-get upgrade -y
           apt-get install -y docker.io git curl
 
-          # docker-compose v1 (stand-alone binary)
-          curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" \
-               -o /usr/local/bin/docker-compose
-          chmod +x /usr/local/bin/docker-compose
+          if ! docker compose version >/dev/null 2>&1; then
+            mkdir -p /usr/local/lib/docker/cli-plugins
+            curl -sSL \
+              https://github.com/docker/compose/releases/download/v2.28.0/docker-compose-linux-x86_64 \
+              -o /usr/local/lib/docker/cli-plugins/docker-compose
+            chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+          fi
 
-          # ------------------------------------------------------------------
-          # Linux user
-          # ------------------------------------------------------------------
-          USERNAME=georgepaltakis
+          ############################################################################
+          # 2. Linux user able to run docker
+          ############################################################################
           id -u "$USERNAME" &>/dev/null || useradd -m "$USERNAME"
           usermod -aG docker "$USERNAME"
-          echo -e '\n# Auto-newgrp docker' >> /home/$USERNAME/.bashrc
-          echo 'if ! id -nG | grep -qw docker; then exec newgrp docker; fi' >> /home/$USERNAME/.bashrc
 
-          # ------------------------------------------------------------------
-          # SSH deploy key (base64-encoded → decoded to /root/.ssh/id_ed25519)
-          # ------------------------------------------------------------------
-          mkdir -p /root/.ssh
-          echo "LS0tLS1CRUdJTiBPUEVOU1NIIFBSSVZBVEUgS0VZLS0tLS0KYjNCbGJuTnphQzFyWlhrdGRqRUFBQUFBQkc1dmJtVUFBQUFFYm05dVpRQUFBQUFBQUFBQkFBQUFNd0FBQUF0emMyZ3RaVwpReU5UVXhPUUFBQUNBd3FDUGsrdVgrcURWZUkxS0VGcENCRjRzK1dONnh4V0FqWnVUR1hQUjlMQUFBQUpoVnJkV0JWYTNWCmdRQUFBQXR6YzJndFpXUXlOVFV4T1FBQUFDQXdxQ1BrK3VYK3FEVmVJMUtFRnBDQkY0cytXTjZ4eFdBalp1VEdYUFI5TEEKQUFBRUFoR0I5SU1ZbENGaXQ4S2lZaURtSTN2dGdEWC9qUUV1Qyt5Z1NOZzAweVVEQ29JK1Q2NWY2b05WNGpVb1FXa0lFWAppejVZM3JIRllDTm01TVpjOUgwc0FBQUFEbkZ4Y1MxbmRtMHRaR1Z3Ykc5NUFRSURCQVVHQnc9PQotLS0tLUVORCBPUEVOU1NIIFBSSVZBVEUgS0VZLS0tLS0K" \
-            | base64 -d >/root/.ssh/id_ed25519
+          ############################################################################
+          # 3. SSH deploy key for cloning private repo
+          ############################################################################
+          install -d -m 700 /root/.ssh
+          cat <<'KEY' | base64 -d >/root/.ssh/id_ed25519
+          LS0tLS1CRUdJTiBPUEVOU1NIIFBSSVZBVEUgS0VZLS0tLS0K...
+          KEY
           chmod 600 /root/.ssh/id_ed25519
           printf 'Host github.com\n  StrictHostKeyChecking no\n' >/root/.ssh/config
           ssh-keyscan -t ed25519 github.com >>/root/.ssh/known_hosts
 
-          # ------------------------------------------------------------------
-          # Clone private repo
-          # ------------------------------------------------------------------
-          git clone --depth 1 git@github.com:paltakis/QQQ_Trading_Bot.git \
-                    /home/$USERNAME/QQQ_Trading_Bot
-          chown -R $USERNAME:$USERNAME /home/$USERNAME/QQQ_Trading_Bot
+          ############################################################################
+          # 4. Clone repo
+          ############################################################################
+          git clone --depth 1 "$REPO_SSH" /home/$USERNAME/QQQ_Trading_Bot
+          chown -R "$USERNAME:$USERNAME" /home/$USERNAME/QQQ_Trading_Bot
 
-          # ------------------------------------------------------------------
-          # Build Docker image
-          # ------------------------------------------------------------------
+          ############################################################################
+          # 5. Seed tokens.json (first boot)
+          #    Expect env var  TOKENS_JSON_B64  to be substituted at deployment time
+          ############################################################################
+          if [ -n "${TOKENS_JSON_B64:-}" ]; then
+            install -d -m 755 -o "$USERNAME" -g "$USERNAME" "$TOKEN_DIR"
+            echo "$TOKENS_JSON_B64" | base64 -d >"$TOKEN_DIR/tokens.json"
+            chown 1000:1000 "$TOKEN_DIR/tokens.json"   # UID inside container
+            chmod 600 "$TOKEN_DIR/tokens.json"
+          else
+            echo ">> TOKENS_JSON_B64 not provided; tokens.json will be created at first run."
+          fi
+
+          ############################################################################
+          # 6. Start full stack (build & run)
+          ############################################################################
           cd /home/$USERNAME/QQQ_Trading_Bot
-          docker build -t qqq_trading_bot_app:latest .
+          sudo -u "$USERNAME" -- bash -c '
+            export ENV_FILE=.env.prod
+            docker compose up -d --build
+          '
 
     serviceAccounts:
-      - email: 626418955652-compute@developer.gserviceaccount.com
-        scopes:
-          - https://www.googleapis.com/auth/devstorage.read_only
-          - https://www.googleapis.com/auth/logging.write
-          - https://www.googleapis.com/auth/monitoring.write
-          - https://www.googleapis.com/auth/service.management.readonly
-          - https://www.googleapis.com/auth/servicecontrol
-          - https://www.googleapis.com/auth/trace.append
+    - email: 626418955652-compute@developer.gserviceaccount.com
+      scopes:
+      - https://www.googleapis.com/auth/logging.write
+      - https://www.googleapis.com/auth/monitoring.write
+      - https://www.googleapis.com/auth/service.management.readonly
+      - https://www.googleapis.com/auth/servicecontrol
+      - https://www.googleapis.com/auth/trace.append
