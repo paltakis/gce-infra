@@ -39,7 +39,6 @@ resources:
           # 1. Base packages + Docker & Compose-plugin (v2)
           ############################################################################
           apt-get update
-          apt-get upgrade -y
           apt-get install -y docker.io git curl
 
           if ! docker compose version >/dev/null 2>&1; then
