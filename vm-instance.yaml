@@ -22,6 +22,9 @@ resources:
 
     metadata:
       items:
+      # ───────────────────────────────────────────────────────────────
+      #  STARTUP SCRIPT
+      # ───────────────────────────────────────────────────────────────
       - key: startup-script
         value: |
           #!/usr/bin/env bash
@@ -29,28 +32,38 @@ resources:
           set -euxo pipefail
 
           ############################################################################
-          # 0. Vars
+          # 0. Vars & helpers
           ############################################################################
           USERNAME=georgepaltakis
           REPO_SSH=git@github.com:paltakis/QQQ_Trading_Bot.git
           TOKEN_DIR="/home/$USERNAME/QQQ_Trading_Bot/config"
 
+          # Helper to pull a single value from instance-metadata
+          get_md() {
+            curl -fs "http://metadata.google.internal/computeMetadata/v1/instance/attributes/$1" \
+                 -H "Metadata-Flavor: Google"
+          }
+
           ############################################################################
-          # 1. Base packages + Docker & Compose-plugin (v2)
+          # 1. Install Docker CE + Buildx + Compose-plugin (official repo)
           ############################################################################
           apt-get update
-          apt-get install -y docker.io git curl
+          apt-get install -y ca-certificates curl gnupg git lsb-release
 
-          if ! docker compose version >/dev/null 2>&1; then
-            mkdir -p /usr/local/lib/docker/cli-plugins
-            curl -sSL \
-              https://github.com/docker/compose/releases/download/v2.28.0/docker-compose-linux-x86_64 \
-              -o /usr/local/lib/docker/cli-plugins/docker-compose
-            chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
-          fi
+          install -m 0755 -d /etc/apt/keyrings
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+            | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+            https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
+            > /etc/apt/sources.list.d/docker.list
+
+          apt-get update
+          apt-get install -y docker-ce docker-ce-cli containerd.io \
+                             docker-buildx-plugin docker-compose-plugin
 
           ############################################################################
-          # 2. Linux user able to run docker
+          # 2. Linux user able to run Docker
           ############################################################################
           id -u "$USERNAME" &>/dev/null || useradd -m "$USERNAME"
           usermod -aG docker "$USERNAME"
@@ -59,12 +72,12 @@ resources:
           # 3. SSH deploy key for cloning private repo
           ############################################################################
           install -d -m 700 /root/.ssh
-          cat <<'KEY' | base64 -d >/root/.ssh/id_ed25519
-          LS0tLS1CRUdJTiBPUEVOU1NIIFBSSVZBVEUgS0VZLS0tLS0K...
+          cat <<'KEY' | base64 -d > /root/.ssh/id_ed25519
+          LS0tLS1CRUdJTiBPUEVOU1NIIFBSSVZBVEUgS0VZLS0tLS0KYjNCbGJuTnphQzFyWlhrdGRqRUFBQUFBQkc1dmJtVUFBQUFFYm05dVpRQUFBQUFBQUFBQkFBQUFNd0FBQUF0emMyZ3RaVwpReU5UVXhPUUFBQUNBd3FDUGsrdVgrcURWZUkxS0VGcENCRjRzK1dONnh4V0FqWnVUR1hQUjlMQUFBQUpoVnJkV0JWYTNWCmdRQUFBQXR6YzJndFpXUXlOVFV4T1FBQUFDQXdxQ1BrK3VYK3FEVmVJMUtFRnBDQkY0cytXTjZ4eFdBalp1VEdYUFI5TEEKQUFBRUFoR0I5SU1ZbENGaXQ4S2lZaURtSTN2dGdEWC9qUUV1Qyt5Z1NOZzAweVVEQ29JK1Q2NWY2b05WNGpVb1FXa0lFWAppejVZM3JIRllDTm01TVpjOUgwc0FBQUFEbkZ4Y1MxbmRtMHRaR1Z3Ykc5NUFRSURCQVVHQnc9PQotLS0tLUVORCBPUEVOU1NIIFBSSVZBVEUgS0VZLS0tLS0K
           KEY
           chmod 600 /root/.ssh/id_ed25519
-          printf 'Host github.com\n  StrictHostKeyChecking no\n' >/root/.ssh/config
-          ssh-keyscan -t ed25519 github.com >>/root/.ssh/known_hosts
+          printf 'Host github.com\n  StrictHostKeyChecking no\n' > /root/.ssh/config
+          ssh-keyscan -t ed25519 github.com >> /root/.ssh/known_hosts
 
           ############################################################################
           # 4. Clone repo
@@ -73,26 +86,67 @@ resources:
           chown -R "$USERNAME:$USERNAME" /home/$USERNAME/QQQ_Trading_Bot
 
           ############################################################################
-          # 5. Seed tokens.json (first boot)
-          #    Expect env var  TOKENS_JSON_B64  to be substituted at deployment time
+          # 5. Write tokens.json (idempotent)
           ############################################################################
-          if [ -n "${TOKENS_JSON_B64:-}" ]; then
+          TOKENS_JSON_B64=$(get_md TOKENS_JSON_B64 || true)
+          if [ -n "${TOKENS_JSON_B64}" ]; then
             install -d -m 755 -o "$USERNAME" -g "$USERNAME" "$TOKEN_DIR"
-            echo "$TOKENS_JSON_B64" | base64 -d >"$TOKEN_DIR/tokens.json"
+            echo "$TOKENS_JSON_B64" | base64 -d > "$TOKEN_DIR/tokens.json"
             chown 1000:1000 "$TOKEN_DIR/tokens.json"   # UID inside container
             chmod 600 "$TOKEN_DIR/tokens.json"
-          else
-            echo ">> TOKENS_JSON_B64 not provided; tokens.json will be created at first run."
           fi
 
           ############################################################################
-          # 6. Start full stack (build & run)
+          # 6. Generate .env.prod  (idempotent)
           ############################################################################
           cd /home/$USERNAME/QQQ_Trading_Bot
+          cat > .env.prod <<EOF
+          FLASK_ENV=production
+          SECRET_KEY=$(get_md SECRET_KEY)
+
+          POSTGRES_USER=$(get_md POSTGRES_USER)
+          POSTGRES_PASSWORD=$(get_md POSTGRES_PASSWORD)
+          POSTGRES_DB=qqqtradingbot
+          DB_HOST=$(get_md DB_HOST)
+          DB_PORT=5432
+          DATABASE_URL=postgresql://$(get_md POSTGRES_USER):$(get_md POSTGRES_PASSWORD)@$(get_md DB_HOST):5432/qqqtradingbot
+
+          VIEWER_AUTH_TOKEN=$(get_md VIEWER_AUTH_TOKEN)
+
+          SCHWAB_CLIENT_ID=$(get_md SCHWAB_CLIENT_ID)
+          SCHWAB_CLIENT_SECRET=$(get_md SCHWAB_CLIENT_SECRET)
+          SCHWAB_SCOPES="openid api"
+          EOF
+          chown "$USERNAME:$USERNAME" .env.prod
+          chmod 600 .env.prod
+
+          ############################################################################
+          # 7. Build & start full stack
+          ############################################################################
           sudo -u "$USERNAME" -- bash -c '
             export ENV_FILE=.env.prod
             docker compose up -d --build
           '
+
+      # ───────────────────────────────────────────────────────────────
+      #  RUNTIME SECRETS  (Deployment Manager substitutes the values)
+      # ───────────────────────────────────────────────────────────────
+      - key: TOKENS_JSON_B64
+        value: ${TOKENS_JSON_B64}
+      - key: SECRET_KEY
+        value: ${SECRET_KEY}
+      - key: POSTGRES_USER
+        value: ${POSTGRES_USER}
+      - key: POSTGRES_PASSWORD
+        value: ${POSTGRES_PASSWORD}
+      - key: DB_HOST
+        value: ${DB_HOST}
+      - key: VIEWER_AUTH_TOKEN
+        value: ${VIEWER_AUTH_TOKEN}
+      - key: SCHWAB_CLIENT_ID
+        value: ${SCHWAB_CLIENT_ID}
+      - key: SCHWAB_CLIENT_SECRET
+        value: ${SCHWAB_CLIENT_SECRET}
 
     serviceAccounts:
     - email: 626418955652-compute@developer.gserviceaccount.com
